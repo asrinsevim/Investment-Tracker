@@ -267,6 +267,29 @@ def main():
             performance_view[col] = performance_view[col].map('{:,.2f} TRY'.format)
 
     print(performance_view.to_string(index=False))
+
+    try:
+        print("Writing detailed report to Google Sheets...")
+        report_sheet = gc.open(PERFORMANCE_SHEET_NAME)
+        
+        # Eğer eski rapor sayfası varsa, onu silerek temiz bir başlangıç yapalım
+        try:
+            worksheet_to_delete = report_sheet.worksheet('Latest_Report')
+            report_sheet.del_worksheet(worksheet_to_delete)
+        except gspread.WorksheetNotFound:
+            pass # Sayfa yoksa sorun değil, zaten oluşturacağız
+
+        # Yeni rapor sayfasını oluştur
+        worksheet_report = report_sheet.add_worksheet(title="Latest_Report", rows="50", cols="20")
+        
+        # Başlıkları ve veriyi yazdır
+        set_with_dataframe(worksheet_report, performance_view)
+        print("Successfully wrote the detailed report to the 'Latest_Report' sheet.")
+
+    except Exception as e:
+        print(f"ERROR: Could not write the detailed report to the sheet. Error: {e}")
+
+    
     print("\nScript finished successfully.")
 
 if __name__ == "__main__":
