@@ -1,7 +1,7 @@
 # investment_tracker.py
-# Final version with support for automatic and manual value entries,
+# Final version with robust log file creation, sharing,
 # and detailed 1D, 1W, 1M performance tracking for each asset.
-# This version logs data to Google Sheets and does not send emails.
+# This version does not send emails.
 
 import pandas as pd
 import yfinance as yf
@@ -17,7 +17,11 @@ CREDENTIALS_FILE = "credentials.json"
 INVESTMENTS_SHEET_NAME = "My_Investments"
 PERFORMANCE_SHEET_NAME = "Performance_Log"
 ASSETS_WORKSHEET_NAME = "Assets"
-LOG_WORKSHEET_NAME = "Daily_Log" # Logs the history of each asset
+LOG_WORKSHEET_NAME = "Daily_Asset_History"
+
+# --- IMPORTANT: UPDATE THIS WITH YOUR EMAIL ---
+# The script will share the newly created log file with this email address.
+USER_EMAIL_FOR_SHARING = "asrnsevim@gmail.com"
 
 # --- Global variables ---
 currency_cache = {}
@@ -56,7 +60,7 @@ def get_tefas_price(ticker):
             if not data.empty:
                 return data['price'].iloc[-1]
         except Exception:
-            pass # Ignore error for a single day and try the previous one
+            pass
         date_to_try -= timedelta(days=1)
     print(f"ERROR: Could not fetch TEFAS price for {ticker} in the last 5 days.")
     return None
@@ -66,8 +70,7 @@ def calculate_time_deposit_value(principal, annual_rate, start_date_str):
     try:
         start_date_obj = pd.to_datetime(start_date_str).to_pydatetime()
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        if start_date_obj > today:
-            return principal
+        if start_date_obj > today: return principal
         days_passed = (today - start_date_obj).days
         daily_rate = annual_rate / 365 / 100
         interest_earned = principal * daily_rate * days_passed
@@ -78,7 +81,6 @@ def calculate_time_deposit_value(principal, annual_rate, start_date_str):
 
 def calculate_individual_performance(history_df, ticker, current_value):
     """Calculates 1D, 1W, and 1M performance for a single asset."""
-    # Default values
     performance = { '1D_Return_%': 0.0, '1W_Return_%': 0.0, '1M_Return_%': 0.0, '1D_Return_TRY': 0.0, '1W_Return_TRY': 0.0, '1M_Return_TRY': 0.0 }
     if history_df.empty:
         return performance
@@ -95,11 +97,12 @@ def calculate_individual_performance(history_df, ticker, current_value):
     val_1d_ago = get_past_value(1)
     val_7d_ago = get_past_value(7)
     val_30d_ago = get_past_value(30)
-
-    last_known_value = asset_history['Current_Value_TRY'].iloc[0]
-    val_1d_ago = val_1d_ago if pd.notna(val_1d_ago) else last_known_value
-    val_7d_ago = val_7d_ago if pd.notna(val_7d_ago) else last_known_value
-    val_30d_ago = val_30d_ago if pd.notna(val_30d_ago) else last_known_value
+    
+    if not asset_history.empty:
+        last_known_value = asset_history['Current_Value_TRY'].iloc[0]
+        val_1d_ago = val_1d_ago if pd.notna(val_1d_ago) else last_known_value
+        val_7d_ago = val_7d_ago if pd.notna(val_7d_ago) else last_known_value
+        val_30d_ago = val_30d_ago if pd.notna(val_30d_ago) else last_known_value
 
     performance['1D_Return_TRY'] = current_value - val_1d_ago if pd.notna(val_1d_ago) else 0.0
     performance['1W_Return_TRY'] = current_value - val_7d_ago if pd.notna(val_7d_ago) else 0.0
@@ -112,30 +115,38 @@ def calculate_individual_performance(history_df, ticker, current_value):
     return performance
 
 def update_performance_log(gc, current_assets_df):
-    """Appends the current state of all assets to the historical log."""
+    """Appends the current state of all assets to the historical log.
+    If the log sheet doesn't exist, it creates and shares it with the user.
+    """
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    log_df = current_assets_df[['Ticker', 'Current_Value_TRY']].copy()
+    log_df['Date'] = today_str
+
     try:
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        log_df = current_assets_df[['Ticker', 'Current_Value_TRY']].copy()
-        log_df['Date'] = today_str
-
         sheet = gc.open(PERFORMANCE_SHEET_NAME)
-        try:
-            worksheet = sheet.worksheet(LOG_WORKSHEET_NAME)
-            history_df = get_as_dataframe(worksheet, evaluate_formulas=True).dropna(how='all')
-            if 'Date' in history_df.columns:
-                history_df = history_df[history_df['Date'] != today_str]
-        except gspread.WorksheetNotFound:
-            worksheet = sheet.add_worksheet(title=LOG_WORKSHEET_NAME, rows="1000", cols="5")
-            history_df = pd.DataFrame()
-
-        combined_df = pd.concat([history_df, log_df], ignore_index=True)
-        worksheet.clear()
-        set_with_dataframe(worksheet, combined_df)
-        print(f"'{PERFORMANCE_SHEET_NAME}' was successfully updated with daily asset details.")
-        return history_df
+    except gspread.exceptions.SpreadsheetNotFound:
+        print(f"'{PERFORMANCE_SHEET_NAME}' not found. Creating a new one...")
+        sheet = gc.create(PERFORMANCE_SHEET_NAME)
+        sheet.share(USER_EMAIL_FOR_SHARING, perm_type='user', role='writer')
+        print(f"Newly created sheet was shared with {USER_EMAIL_FOR_SHARING}.")
+    
+    try:
+        worksheet = sheet.worksheet(LOG_WORKSHEET_NAME)
+        history_df = get_as_dataframe(worksheet, evaluate_formulas=True).dropna(how='all')
+        if 'Date' in history_df.columns:
+            history_df = history_df[history_df['Date'] != today_str]
+    except gspread.WorksheetNotFound:
+        worksheet = sheet.add_worksheet(title=LOG_WORKSHEET_NAME, rows="1000", cols="5")
+        history_df = pd.DataFrame()
     except Exception as e:
-        print(f"ERROR: Failed to update the performance log. Error: {e}")
-        return pd.DataFrame()
+        print(f"Error reading worksheet: {e}. Assuming empty history.")
+        history_df = pd.DataFrame()
+
+    combined_df = pd.concat([history_df, log_df], ignore_index=True)
+    worksheet.clear()
+    set_with_dataframe(worksheet, combined_df)
+    print(f"'{PERFORMANCE_SHEET_NAME}' was successfully updated with daily asset details.")
+    return history_df
 
 def main():
     """Main function to run the tracker."""
@@ -143,7 +154,6 @@ def main():
     gc = connect_to_google_sheets()
     if not gc: return
 
-    # 1. Read and clean master investment data
     try:
         investments_sheet = gc.open(INVESTMENTS_SHEET_NAME)
         assets_worksheet = investments_sheet.worksheet(ASSETS_WORKSHEET_NAME)
@@ -159,7 +169,6 @@ def main():
         print(f"ERROR: Could not read '{INVESTMENTS_SHEET_NAME}'. Check columns and permissions. Error: {e}")
         return
 
-    # 2. Read historical performance data BEFORE calculations
     history_df = pd.DataFrame()
     try:
         sheet = gc.open(PERFORMANCE_SHEET_NAME)
@@ -167,18 +176,16 @@ def main():
         history_df = get_as_dataframe(worksheet, evaluate_formulas=True).dropna(how='all')
         if not history_df.empty:
             history_df['Date'] = pd.to_datetime(history_df['Date'])
-    except (gspread.SpreadsheetNotFound, gspread.WorksheetNotFound):
-        print("Performance log not found. Will be created.")
+    except (gspread.exceptions.SpreadsheetNotFound, gspread.WorksheetNotFound):
+        print("Performance log not found. It will be created after this run.")
     except Exception as e:
         print(f"Could not read performance history: {e}")
 
-    # 3. Fetch FX rate
     usd_try_rate = get_fx_rate('USD')
     if not usd_try_rate:
         print("CRITICAL ERROR: Cannot proceed without FX rate.")
         return
 
-    # 4. Process each asset to calculate its current state and performance
     processed_rows = []
     for index, row in assets_df.iterrows():
         current_row = row.to_dict()
@@ -191,15 +198,12 @@ def main():
             current_value_try = manual_value * usd_try_rate if row['Currency'] == 'USD' else manual_value
             total_cost_try = row['Manual_Total_Cost_TRY'] if 'Manual_Total_Cost_TRY' in row else 0
         else:
-            asset_type = row.get('Asset_Type', '')
-            ticker = row.get('Ticker', '')
-            quantity = row.get('Quantity', 0)
-            purchase_price = row.get('Purchase_Price', 0)
+            asset_type = row.get('Asset_Type', ''); ticker = row.get('Ticker', ''); quantity = row.get('Quantity', 0); purchase_price = row.get('Purchase_Price', 0)
             print(f"Processing Auto Fetch: {ticker} ({asset_type})")
             time.sleep(0.5)
+            price = None
 
-            price = 0
-            if asset_type in ['Stock (US)', 'Crypto', 'FX']: # 'Döviz' type translated to 'FX'
+            if asset_type in ['Stock (US)', 'Crypto', 'FX']:
                 try:
                     price_data = yf.Ticker(ticker).history(period="1d")
                     if not price_data.empty: price = price_data['Close'].iloc[0]
@@ -209,17 +213,15 @@ def main():
                 price = get_tefas_price(ticker)
             elif asset_type == 'Time Deposit':
                 current_value_try = calculate_time_deposit_value(quantity, row.get('Annual_Interest_Rate', 0), row.get('Start_Date', ''))
-            
+
             if asset_type != 'Time Deposit':
                 if price is not None and price > 0:
                     current_value_try = quantity * price
-                    if row['Currency'] == 'USD':
-                        current_value_try *= usd_try_rate
+                    if row['Currency'] == 'USD': current_value_try *= usd_try_rate
             
             total_cost_try = quantity * purchase_price
-            if row['Currency'] == 'USD':
-                total_cost_try *= usd_try_rate
-        
+            if row['Currency'] == 'USD': total_cost_try *= usd_try_rate
+
         performance_data = calculate_individual_performance(history_df, row['Ticker'], current_value_try)
         
         current_row.update({
@@ -230,17 +232,14 @@ def main():
         })
         processed_rows.append(current_row)
 
-    # 5. Create the final DataFrame for today's view and calculate totals
     final_df = pd.DataFrame(processed_rows)
     total_current_value = final_df['Current_Value_TRY'].sum()
     total_cost = final_df['Total_Cost_TRY'].sum()
     total_profit_loss = total_current_value - total_cost
     total_return_pct = (total_profit_loss / total_cost) * 100 if total_cost != 0 else 0
 
-    # 6. Update the performance log with today's values for future calculations
     update_performance_log(gc, final_df)
-
-    # 7. Print summaries to the console
+    
     print("\n--- PORTFOLIO SUMMARY ---")
     print(f"Total Current Value: {total_current_value:,.2f} TRY")
     print(f"Total Cost:          {total_cost:,.2f} TRY")
@@ -249,17 +248,10 @@ def main():
     print("-------------------------\n")
     
     print("--- INDIVIDUAL ASSET PERFORMANCE ---")
-    display_cols = [
-        'Ticker', 'Current_Value_TRY', 'Profit_Loss_TRY', 
-        '1D_Return_%', '1D_Return_TRY', 
-        '1W_Return_%', '1W_Return_TRY', 
-        '1M_Return_%', '1M_Return_TRY'
-    ]
-    # Ensure all display columns exist before trying to display them
+    display_cols = ['Ticker', 'Current_Value_TRY', 'Profit_Loss_TRY', '1D_Return_%', '1D_Return_TRY', '1W_Return_%', '1W_Return_TRY', '1M_Return_%', '1M_Return_TRY']
     display_cols_exist = [col for col in display_cols if col in final_df.columns]
     performance_view = final_df[display_cols_exist].copy()
     
-    # Format the output for better readability
     for col in performance_view.columns:
         if '_%' in col:
             performance_view[col] = performance_view[col].map('{:+.2f}%'.format)
