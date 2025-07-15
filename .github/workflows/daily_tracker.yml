@@ -1,6 +1,6 @@
 # .github/workflows/daily_tracker.yml
 
-name: Günlük Portföy Takibi
+name: Daily Porfolio Tracker
 
 on:
   workflow_dispatch: # Manuel olarak çalıştırma butonu ekler
