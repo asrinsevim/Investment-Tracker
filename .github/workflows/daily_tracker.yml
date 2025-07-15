@@ -1,0 +1,33 @@
+# .github/workflows/daily_tracker.yml
+
+name: Günlük Portföy Takibi
+
+on:
+  workflow_dispatch: # Manuel olarak çalıştırma butonu ekler
+  schedule:
+    # Her gün sabah 07:00 UTC'de çalışır (Türkiye saatiyle 10:00)
+    - cron: '0 7 * * *'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create Credentials File from Secret
+        run: echo "${{ secrets.GCP_SA_KEY }}" > credentials.json
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas gspread gspread-dataframe google-auth-oauthlib yfinance tefas-crawler
+
+      - name: Run the Tracker Script
+        run: python investment_tracker.py
